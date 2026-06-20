@@ -46,7 +46,27 @@ class Config:
         'SUMMARY_MAX_SENTENCES': 10,
         'TIMELINE_SORT': 'date',  # date, relevance
         'INCLUDE_GRAPH': True,
-        
+
+        # LLM / vLLM Generation (RAG via LangGraph)
+        'USE_LLM': True,                                  # use vLLM-backed RAG generation (False = heuristic only)
+        'VLLM_BASE_URL': 'http://localhost:8000/v1',      # vLLM OpenAI-compatible endpoint
+        'VLLM_API_KEY': 'EMPTY',                          # vLLM ignores this, but the client requires a value
+        'VLLM_MODEL': 'Qwen/Qwen2.5-7B-Instruct',         # model name as served by vLLM
+        'LLM_TEMPERATURE': 0.1,                           # low temperature reduces hallucination
+        'LLM_MAX_TOKENS': 1024,
+        'LLM_STREAMING': True,                            # stream tokens during generation
+        'LLM_TIMEOUT': 120,                               # seconds
+        'MAX_GENERATION_ATTEMPTS': 2,                     # LangGraph self-correction retries on grounding failure
+        'RAG_CONTEXT_CHARS': 1200,                        # per-article chars included in the prompt context block
+
+        # RAGAS Evaluation
+        'RAGAS_JUDGE_BASE_URL': None,                     # defaults to VLLM_BASE_URL if None
+        'RAGAS_JUDGE_MODEL': None,                        # defaults to VLLM_MODEL if None
+        'RAGAS_JUDGE_API_KEY': None,                      # defaults to VLLM_API_KEY if None
+        'EVAL_SET_PATH': 'eval/golden_set.jsonl',
+        'EVAL_TOP_K': 20,                                 # articles retrieved per eval query
+        'EVAL_RESULTS_PATH': 'eval_results.json',
+
         # Performance
         'CACHE_DIR': './cache',
         'ENABLE_CACHE': True,
@@ -244,6 +264,8 @@ class Config:
             'Search': ['DEFAULT_TOP_K', 'SIMILARITY_THRESHOLD'],
             'Clustering': ['CLUSTERING_METHOD', 'MIN_CLUSTER_SIZE', 'MAX_CLUSTERS'],
             'Narrative': ['SUMMARY_MIN_SENTENCES', 'SUMMARY_MAX_SENTENCES', 'TIMELINE_SORT', 'INCLUDE_GRAPH'],
+            'LLM / vLLM': ['USE_LLM', 'VLLM_BASE_URL', 'VLLM_API_KEY', 'VLLM_MODEL', 'LLM_TEMPERATURE', 'LLM_MAX_TOKENS', 'LLM_STREAMING', 'LLM_TIMEOUT', 'MAX_GENERATION_ATTEMPTS', 'RAG_CONTEXT_CHARS'],
+            'RAGAS Evaluation': ['RAGAS_JUDGE_BASE_URL', 'RAGAS_JUDGE_MODEL', 'RAGAS_JUDGE_API_KEY', 'EVAL_SET_PATH', 'EVAL_TOP_K', 'EVAL_RESULTS_PATH'],
             'Performance': ['CACHE_DIR', 'ENABLE_CACHE', 'LOG_LEVEL', 'NUM_WORKERS'],
             'Output': ['OUTPUT_FORMAT', 'OUTPUT_INDENT', 'INCLUDE_METADATA']
         }

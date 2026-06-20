@@ -25,20 +25,24 @@ logger = setup_logging(level=getattr(__import__('logging'), config.get('LOG_LEVE
 class NarrativeBuilder:
     """Main orchestrator for narrative generation"""
     
-    def __init__(self, data_path: str = None, min_rating: float = None):
+    def __init__(self, data_path: str = None, min_rating: float = None,
+                 use_llm: bool = None):
         """
         Initialize the narrative builder
-        
+
         Args:
             data_path: Path to the JSON news dataset (uses config if None)
             min_rating: Minimum source rating to filter (uses config if None)
+            use_llm: Use vLLM-backed RAG generation (uses config USE_LLM if None)
         """
         self.config = get_config()
         self.data_path = data_path or self.config.get('DEFAULT_DATA_PATH')
         self.min_rating = min_rating if min_rating is not None else self.config.get('MIN_SOURCE_RATING')
+        self.use_llm = use_llm if use_llm is not None else self.config.get('USE_LLM', True)
         self.data_loader = None
         self.embedder = None
         self.engine = None
+        self.narrator = None
         
     def load_and_filter(self) -> int:
         """Load dataset and filter by rating"""
@@ -69,7 +73,14 @@ class NarrativeBuilder:
         
         elapsed = time.time() - start_time
         logger.info(f"Built vector index for {len(articles)} articles in {elapsed:.2f}s")
-    
+
+    def _get_narrator(self):
+        """Lazily build the LangGraph RAG narrator backed by the FAISS retriever."""
+        if self.narrator is None:
+            from rag_graph import RAGNarrator
+            self.narrator = RAGNarrator(retriever=self.embedder.search)
+        return self.narrator
+
     def generate_narrative(self, topic: str, top_k: int = None) -> Dict[str, Any]:
         """
         Generate narrative for a given topic
@@ -86,17 +97,39 @@ class NarrativeBuilder:
             
         logger.info(f"Generating narrative for topic: '{topic}'")
         start_time = time.time()
-        
-        # Retrieve relevant articles using semantic search
-        relevant_articles = self.embedder.search(topic, top_k=top_k)
+
+        relevant_articles = None
+        llm_narrative = None
+
+        # RAG path: retrieve + ground a summary/timeline with the local vLLM model.
+        if self.use_llm:
+            try:
+                llm_narrative = self._get_narrator().generate(topic, top_k=top_k)
+                relevant_articles = llm_narrative.get('articles') or []
+                if not llm_narrative.get('summary'):
+                    logger.warning("LLM returned an empty summary; falling back to heuristics.")
+                    llm_narrative = None
+                else:
+                    logger.info("Generated grounded narrative via vLLM RAG graph")
+            except Exception as e:
+                logger.warning(
+                    f"LLM generation unavailable ({e}); falling back to heuristic narrative."
+                )
+                llm_narrative = None
+                relevant_articles = None
+
+        # Heuristic path / fallback: plain semantic retrieval.
+        if relevant_articles is None:
+            relevant_articles = self.embedder.search(topic, top_k=top_k)
         logger.info(f"Retrieved {len(relevant_articles)} relevant articles")
-        
-        # Initialize narrative engine
-        self.engine = NarrativeEngine(relevant_articles, topic)
-        
+
+        # Initialize narrative engine (uses the LLM narrative when available)
+        self.engine = NarrativeEngine(relevant_articles, topic, llm_narrative=llm_narrative)
+
         # Generate all components
         narrative = {
             "topic": topic,
+            "generation_mode": "rag_vllm" if llm_narrative else "heuristic",
             "narrative_summary": self.engine.generate_summary(),
             "timeline": self.engine.build_timeline(),
             "clusters": self.engine.create_clusters(),
@@ -169,6 +202,25 @@ Examples:
     )
     
     parser.add_argument(
+        '--no-llm',
+        action='store_true',
+        help='Disable vLLM RAG generation and use the heuristic narrative engine only'
+    )
+
+    parser.add_argument(
+        '--evaluate',
+        action='store_true',
+        help='Run RAGAS evaluation over the golden eval set (instead of a single topic)'
+    )
+
+    parser.add_argument(
+        '--eval-set',
+        type=str,
+        default=None,
+        help=f'Path to JSONL eval set (default: from config or {config.get("EVAL_SET_PATH")})'
+    )
+
+    parser.add_argument(
         '--config',
         action='store_true',
         help='Show current configuration and exit'
@@ -199,9 +251,9 @@ Examples:
         print(f"Configuration saved to {args.save_config}")
         sys.exit(0)
     
-    # Topic is required for narrative generation
-    if not args.topic:
-        parser.error("--topic is required (unless using --config or --save-config)")
+    # Topic is required for narrative generation (not for evaluation runs)
+    if not args.topic and not args.evaluate:
+        parser.error("--topic is required (unless using --config, --save-config, or --evaluate)")
     
     # Use command-line args or fall back to config
     data_path = args.data or config.get('DEFAULT_DATA_PATH')
@@ -215,17 +267,26 @@ Examples:
     
     try:
         # Initialize builder
-        builder = NarrativeBuilder(data_path, min_rating)
-        
+        builder = NarrativeBuilder(data_path, min_rating, use_llm=not args.no_llm)
+
         # Load and filter data
         article_count = builder.load_and_filter()
         if article_count == 0:
             logger.error("No articles found after filtering. Check your dataset and rating threshold.")
             sys.exit(1)
-        
+
         # Build vector index
         builder.initialize_embedder()
-        
+
+        # Evaluation mode: run RAGAS over the golden set and exit.
+        if args.evaluate:
+            from evaluation import evaluate_narratives
+            eval_set = args.eval_set or config.get('EVAL_SET_PATH')
+            results = evaluate_narratives(eval_set, builder)
+            print(format_json_output(results))
+            logger.info("RAGAS evaluation completed successfully!")
+            sys.exit(0)
+
         # Generate narrative
         narrative = builder.generate_narrative(args.topic, top_k)
         

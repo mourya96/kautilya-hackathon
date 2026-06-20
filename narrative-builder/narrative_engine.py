@@ -15,16 +15,28 @@ logger = logging.getLogger(__name__)
 class NarrativeEngine:
     """Generates narrative structures from news articles"""
     
-    def __init__(self, articles: List[Dict[str, Any]], topic: str):
+    def __init__(self, articles: List[Dict[str, Any]], topic: str,
+                 llm_narrative: Dict[str, Any] = None):
         """
         Initialize narrative engine
-        
+
         Args:
             articles: List of relevant articles
             topic: Topic being analyzed
+            llm_narrative: Optional grounded narrative from the RAG generator,
+                shaped {"summary": str, "timeline": [{"id", "why_it_matters"}]}.
+                When provided, the LLM summary and per-article reasoning are used;
+                otherwise the heuristic fallbacks below are used.
         """
         self.articles = sorted(articles, key=lambda x: x.get('date', ''))
         self.topic = topic
+        self.llm_narrative = llm_narrative or {}
+        # Map article id -> LLM-generated "why it matters" reasoning.
+        self._llm_reasons = {
+            entry.get('id'): entry.get('why_it_matters')
+            for entry in self.llm_narrative.get('timeline', [])
+            if entry.get('why_it_matters')
+        }
         
     def generate_summary(self) -> str:
         """
@@ -35,7 +47,12 @@ class NarrativeEngine:
         """
         if not self.articles:
             return f"No relevant articles found for topic: {self.topic}"
-        
+
+        # Prefer the grounded LLM summary when available.
+        llm_summary = self.llm_narrative.get('summary')
+        if llm_summary:
+            return llm_summary
+
         # Get key statistics
         num_articles = len(self.articles)
         date_range = self._get_date_range()
@@ -83,12 +100,15 @@ class NarrativeEngine:
         timeline = []
         
         for article in self.articles:
+            # Use the grounded LLM reasoning when present, else the heuristic.
+            why = self._llm_reasons.get(article.get('id')) or \
+                self._generate_importance_reason(article)
             entry = {
                 'date': article.get('date', 'Unknown'),
                 'headline': article['headline'],
                 'url': article.get('url', ''),
                 'source': article.get('source', 'Unknown'),
-                'why_it_matters': self._generate_importance_reason(article)
+                'why_it_matters': why
             }
             timeline.append(entry)
         
